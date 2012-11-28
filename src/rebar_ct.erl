@@ -59,12 +59,14 @@ run_test_if_present(TestDir, LogDir, Config, File) ->
             ?WARN("~s directory not present - skipping\n", [TestDir]),
             ok;
         true ->
+            ?DEBUG("Looking for Common Test suites in ~s...\n", [TestDir]),
             case filelib:wildcard(TestDir ++ "/*_SUITE.{beam,erl}") of
                 [] ->
                     ?WARN("~s directory present, but no common_test"
                           ++ " SUITES - skipping\n", [TestDir]),
                     ok;
                 _ ->
+                    ?DEBUG("Found some!\n", []),
                     try
                         run_test(TestDir, LogDir, Config, File)
                     catch
@@ -75,6 +77,7 @@ run_test_if_present(TestDir, LogDir, Config, File) ->
     end.
 
 run_test(TestDir, LogDir, Config, _File) ->
+    ?DEBUG("Creating ct_run command line...\n", []),
     {Cmd, RawLog} = make_cmd(TestDir, LogDir, Config),
     ?DEBUG("ct_run cmd:~n~p~n", [Cmd]),
     clear_log(LogDir, RawLog),
@@ -150,12 +153,16 @@ make_cmd(TestDir, RawLogDir, Config) ->
     %% that are part of the root Erlang install are filtered out to
     %% avoid duplication
     R = code:root_dir(),
+    ?DEBUG("Traversing code path...\n", []),
     NonLibCodeDirs = [P || P <- code:get_path(), not lists:prefix(R, P)],
+    ?DEBUG("Found interesting directories: ~p\n", [NonLibCodeDirs]),
     CodeDirs = [io_lib:format("\"~s\"", [Dir]) ||
                    Dir <- [EbinDir|NonLibCodeDirs]],
     CodePathString = string:join(CodeDirs, " "),
+    ?DEBUG("Have code path string\n", []),
     Cmd = case get_ct_specs(Cwd) of
               undefined ->
+                  ?DEBUG("Creating command line without specs...\n", []),
                   ?FMT("erl " % should we expand ERL_PATH?
                        " -noshell -pa ~s ~s"
                        " ~s"
@@ -191,6 +198,7 @@ make_cmd(TestDir, RawLogDir, Config) ->
                       SpecFlags ++ get_cover_config(Config, Cwd)
           end,
     RawLog = filename:join(LogDir, "raw.log"),
+    ?DEBUG("Got it: ~s\n", [Cmd]),
     {Cmd, RawLog}.
 
 build_name(Config) ->
@@ -203,6 +211,7 @@ get_extra_params(Config) ->
     rebar_config:get_local(Config, ct_extra_params, "").
 
 get_ct_specs(Cwd) ->
+    ?DEBUG("Looking for test spec in ~s...\n", [Cwd]),
     case collect_glob(Cwd, ".*\.test\.spec\$") of
         [] -> undefined;
         [Spec] ->
@@ -217,6 +226,7 @@ get_cover_config(Config, Cwd) ->
         false ->
             "";
         true ->
+            ?DEBUG("Looking for cover spec in ~s...\n", [Cwd]),
             case collect_glob(Cwd, ".*cover\.spec\$") of
                 [] ->
                     ?DEBUG("No cover spec found: ~s~n", [Cwd]),
@@ -229,18 +239,22 @@ get_cover_config(Config, Cwd) ->
             end
     end.
 
-collect_glob(Cwd, Glob) ->
-    filelib:fold_files(Cwd, Glob, true, fun collect_files/2, []).
-
-collect_files(F, Acc) ->
-    %% Ignore any specs under the deps/ directory. Do this pulling
-    %% the dirname off the the F and then splitting it into a list.
-    Parts = filename:split(filename:dirname(F)),
-    case lists:member("deps", Parts) of
-        true ->
-            Acc;                % There is a directory named "deps" in path
-        false ->
-            [F | Acc]           % No "deps" directory in path
+collect_glob(Cwd, Regexp) when is_list(Regexp) ->
+    {ok, Compiled} = re:compile(Regexp),
+    collect_glob(Cwd, Compiled);
+collect_glob(Cwd, CompiledRegexp) when is_tuple(CompiledRegexp), element(1, CompiledRegexp) =:= re_pattern ->
+    ?DEBUG("Descending into ~s...\n", [Cwd]),
+    case file:list_dir(Cwd) of
+        {ok, Filenames} ->
+            AbsNames = [filename:join(Cwd, Name) || Name <- Filenames],
+            {Directories, Files} = lists:partition(fun filelib:is_dir/1, AbsNames),
+            MatchingFiles =
+                [File || File <- Files, nomatch =/= re:run(File, CompiledRegexp, [{capture, none}])],
+            MatchingFiles ++
+                %% Ignore any specs under the deps/ directory.
+                lists:append([collect_glob(Dir, CompiledRegexp) || Dir <- Directories, filename:basename(Dir) =/= "deps"]);
+        {error, E} ->
+            ?WARN("Cannot list files in ~s: ~p\n", [Cwd, E])
     end.
 
 get_ct_config_file(TestDir) ->

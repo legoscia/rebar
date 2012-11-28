@@ -252,7 +252,9 @@ collect_glob(Cwd, CompiledRegexp) when is_tuple(CompiledRegexp), element(1, Comp
                 [File || File <- Files, nomatch =/= re:run(File, CompiledRegexp, [{capture, none}])],
             MatchingFiles ++
                 %% Ignore any specs under the deps/ directory.
-                lists:append([collect_glob(Dir, CompiledRegexp) || Dir <- Directories, filename:basename(Dir) =/= "deps"]);
+                lists:append([collect_glob(Dir, CompiledRegexp)
+                              || Dir <- Directories,
+                                not lists:member(filename:basename(Dir), ["deps", "logs", ".git"])]);
         {error, E} ->
             ?WARN("Cannot list files in ~s: ~p\n", [Cwd, E])
     end.
